@@ -15,3 +15,8 @@ ifeq ($(strip $(BOARD_USES_KBDSENSOR)),true)
 LOCAL_SRC_FILES := kbdsensor.cpp
 include $(BUILD_SHARED_LIBRARY)
 endif
+
+ifeq ($(strip $(BOARD_USES_S103T_SENSOR)),true)
+LOCAL_SRC_FILES := s103t_sensor.c
+include $(BUILD_SHARED_LIBRARY)
+endif
