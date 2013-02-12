@@ -36,6 +36,7 @@ struct KbdSensorKeys {
 	{ "AT Translated Set 2 keyboard", { EV_KEY, KEY_F5, KEY_F8, KEY_F6, KEY_F7, KEY_LEFTALT, KEY_LEFTCTRL, 1 } },
 	{ "AT Translated Set 2 keyboard", { EV_KEY, KEY_F9, KEY_F12, KEY_F10, KEY_F11, KEY_LEFTALT, KEY_LEFTCTRL, 1 } },
 	{ "Asus Laptop extra buttons", { EV_KEY, KEY_F9, KEY_F12, KEY_F10, KEY_F11, KEY_LEFTALT, KEY_LEFTCTRL, 2 } },
+	{ "HP WMI hotkeys", { -1, 0, 0, 0, 0, 0, 0, 3 } },
 };
 
 const int ID_ACCELERATION = (SENSORS_HANDLE_BASE + 0);
@@ -242,6 +243,18 @@ int SensorPollContext::doPoll(sensors_event_t *data, int count)
 				if (enabled && count > 0)
 					break;
 			}
+		} else if (iev.type == EV_KEY && iev.code == KEY_DIRECTION && iev.value) {
+			if (rotation == ROT_270)
+				rotation = ROT_0;
+			else
+				rotation++;
+			break;
+		} else if (iev.type == EV_SW && iev.code == SW_TABLET_MODE) {
+			if (!iev.value)
+				rotation = ROT_0;
+			else if (rotation == ROT_0)
+				rotation = ROT_90;
+			break;
 		}
 	}
 
