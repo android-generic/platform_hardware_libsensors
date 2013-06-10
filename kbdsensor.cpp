@@ -243,11 +243,19 @@ int SensorPollContext::doPoll(sensors_event_t *data, int count)
 				if (enabled && count > 0)
 					break;
 			}
-		} else if (iev.type == EV_KEY && iev.code == keys[1] && iev.value) {
-			if (rotation == ROT_270)
-				rotation = ROT_0;
-			else
-				rotation++;
+		} else if (iev.type == EV_KEY) {
+			if (iev.code == keys[1] && iev.value) {
+				if (rotation == ROT_270)
+					rotation = ROT_0;
+				else
+					rotation++;
+				}
+			if (iev.code == keys[2] && iev.value) {
+				if (rotation == ROT_0)
+					rotation = ROT_270;
+				else
+					rotation--;
+				}
 			break;
 		} else if (iev.type == EV_SW && iev.code == SW_TABLET_MODE) {
 			if (!iev.value)
