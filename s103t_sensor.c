@@ -8,6 +8,7 @@
 
 #define LOG_TAG "S103TSensors"
 
+#include <inttypes.h>
 #include <linux/types.h>
 #include <linux/input.h>
 #include <fcntl.h>
@@ -23,7 +24,7 @@
 #define ID_ACCELERATION         (SENSORS_HANDLE_BASE + 0)
 
 typedef struct SensorContext {
-    struct sensors_poll_device_t device;
+    struct sensors_poll_device_1 device;
     int fd;
     uint32_t active_sensors;
     sensors_event_t orientation;
@@ -31,12 +32,6 @@ typedef struct SensorContext {
 } SensorContext;
 
 static int context__activate(struct sensors_poll_device_t *dev, int handle, int enabled)
-{
-    ALOGD("%s: called", __FUNCTION__);
-    return 0;
-}
-
-static int context__setDelay(struct sensors_poll_device_t *dev, int handle, int64_t ns)
 {
     ALOGD("%s: called", __FUNCTION__);
     return 0;
@@ -107,6 +102,20 @@ static int context__poll(struct sensors_poll_device_t *dev, sensors_event_t* dat
     }
 }
 
+static int context__batch(struct sensors_poll_device_1* dev, int sensor_handle,
+		int flags, int64_t sampling_period_ns, int64_t max_report_latency_ns)
+{
+    ALOGD("%s: dev=%p sensor_handle=%d flags=%d sampling_period_ns=%" PRId64 " max_report_latency_ns=%" PRId64,
+            __FUNCTION__, dev, sensor_handle, flags, sampling_period_ns, max_report_latency_ns);
+    return EXIT_SUCCESS;
+}
+
+static int context__flush(struct sensors_poll_device_1* dev, int sensor_handle)
+{
+    ALOGD("%s: dev=%p sensor_handle=%d", __FUNCTION__, dev, sensor_handle);
+    return EXIT_SUCCESS;
+}
+
 static const struct sensor_t sSensorListInit[] = {
     { .name =
         "S103T Orientation sensor",
@@ -141,7 +150,7 @@ static int open_sensors(const struct hw_module_t* module, const char* id, struct
     memset(ctx, 0, sizeof(*ctx));
 
     ctx->device.common.tag = HARDWARE_DEVICE_TAG;
-    ctx->device.common.version = 0;
+    ctx->device.common.version = SENSORS_DEVICE_API_VERSION_1_3;
     ctx->device.common.module = (struct hw_module_t*) module;
     ctx->fd = -1;
     const char *dirname = "/dev/input";
@@ -180,8 +189,9 @@ static int open_sensors(const struct hw_module_t* module, const char* id, struct
 
     ctx->device.common.close = context__close;
     ctx->device.activate = context__activate;
-    ctx->device.setDelay = context__setDelay;
     ctx->device.poll = context__poll;
+    ctx->device.batch = context__batch;
+    ctx->device.flush = context__flush;
     ctx->orientation.version = sizeof(sensors_event_t);
     ctx->orientation.sensor = ID_ACCELERATION;
     ctx->orientation.type = SENSOR_TYPE_ACCELEROMETER;
@@ -201,8 +211,8 @@ static struct hw_module_methods_t sensors_module_methods = {
 struct sensors_module_t HAL_MODULE_INFO_SYM = {
     .common = {
         .tag = HARDWARE_MODULE_TAG,
-        .version_major = 1,
-        .version_minor = 0,
+        .module_api_version = 1,
+        .hal_api_version = 0,
         .id = SENSORS_HARDWARE_MODULE_ID,
         .name = "s103t SENSORS Module",
         .author = "Oliver Dill",

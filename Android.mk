@@ -38,6 +38,7 @@ LOCAL_MODULE := sensors.s103t
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_SRC_FILES := s103t_sensor.c
+LOCAL_CFLAGS := -Wno-unused-parameter
 include $(BUILD_SHARED_LIBRARY)
 
 include $(CLEAR_VARS)
