@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <cinttypes>
 #include <fcntl.h>
 #include <dirent.h>
 #include <cutils/log.h>
@@ -370,7 +371,7 @@ static SensorBase *(*probeSensors[])(const char *) = {
 	Sensor<ID_GYROSCOPE>::probe,
 };
 
-class SensorPollContext : sensors_poll_device_t {
+class SensorPollContext : sensors_poll_device_1 {
   public:
 	SensorPollContext(const struct hw_module_t *module, struct hw_device_t **device);
 	~SensorPollContext();
@@ -383,6 +384,8 @@ class SensorPollContext : sensors_poll_device_t {
 	static int poll_activate(struct sensors_poll_device_t *dev, int handle, int enabled);
 	static int poll_setDelay(struct sensors_poll_device_t *dev, int handle, int64_t ns);
 	static int poll_poll(struct sensors_poll_device_t *dev, sensors_event_t *data, int count);
+	static int poll_batch(struct sensors_poll_device_1* dev, int sensor_handle, int flags, int64_t sampling_period_ns, int64_t max_report_latency_ns);
+	static int poll_flush(struct sensors_poll_device_1* dev, int sensor_handle);
 
 	int doPoll(sensors_event_t *data, int count);
 
@@ -398,11 +401,14 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 	memset(this, 0, sizeof(*this));
 
 	common.tag     = HARDWARE_DEVICE_TAG;
+	common.version = SENSORS_DEVICE_API_VERSION_1_3;
 	common.module  = const_cast<struct hw_module_t *>(module);
 	common.close   = poll_close;
 	activate       = poll_activate;
 	setDelay       = poll_setDelay;
 	poll           = poll_poll;
+	batch          = poll_batch;
+	flush          = poll_flush;
 	*device        = &common;
 
 	char path[PATH_MAX];
@@ -416,7 +422,7 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 					if (SensorBase *s = probeSensors[i](path)) {
 						sensors[i] = s;
 						sensors_list[count++] = *s;
-						ALOGD("found %s", __FUNCTION__, s->name);
+						ALOGD("found %s", s->name);
 					}
 				}
 			}
@@ -469,7 +475,6 @@ int SensorPollContext::poll_activate(struct sensors_poll_device_t *dev, int hand
 
 int SensorPollContext::poll_setDelay(struct sensors_poll_device_t *dev, int handle, int64_t ns)
 {
-	ALOGD("%s: handle=%d delay-ns=%lld", __FUNCTION__, handle, ns);
 	SensorPollContext *ctx = reinterpret_cast<SensorPollContext *>(dev);
 	if (handle >= 0 && handle < MAX_SENSORS && ctx->sensors[handle])
 		return ctx->sensors[handle]->setDelay(ns);
@@ -482,6 +487,19 @@ int SensorPollContext::poll_poll(struct sensors_poll_device_t *dev, sensors_even
 	ALOGV("%s: dev=%p data=%p count=%d", __FUNCTION__, dev, data, count);
 	SensorPollContext *ctx = reinterpret_cast<SensorPollContext *>(dev);
 	return ctx->doPoll(data, count);
+}
+
+int SensorPollContext::poll_batch(struct sensors_poll_device_1* dev, int sensor_handle, int flags, int64_t sampling_period_ns, int64_t max_report_latency_ns)
+{
+	ALOGD("%s: dev=%p sensor_handle=%d flags=%d sampling_period_ns=%" PRId64 " max_report_latency_ns=%" PRId64,
+			__FUNCTION__, dev, sensor_handle, flags, sampling_period_ns, max_report_latency_ns);
+	return poll_setDelay(&dev->v0, sensor_handle, sampling_period_ns);
+}
+
+int SensorPollContext::poll_flush(struct sensors_poll_device_1* dev, int sensor_handle)
+{
+	ALOGD("%s: dev=%p sensor_handle=%d", __FUNCTION__, dev, sensor_handle);
+	return EXIT_SUCCESS;
 }
 
 int SensorPollContext::doPoll(sensors_event_t *data, int cnt)
@@ -518,21 +536,21 @@ static int sensors_get_sensors_list(struct sensors_module_t *, struct sensor_t c
 }
 
 static struct hw_module_methods_t sensors_methods = {
-	open: open_iio_sensors
+	.open = open_iio_sensors
 };
 
 struct sensors_module_t HAL_MODULE_INFO_SYM = {
-	common: {
-		tag: HARDWARE_MODULE_TAG,
-		version_major: 1,
-		version_minor: 0,
-		id: SENSORS_HARDWARE_MODULE_ID,
-		name: "IIO Sensors",
-		author: "Chih-Wei Huang",
-		methods: &sensors_methods,
-		dso: 0,
-		reserved: { }
+	.common = {
+		.tag = HARDWARE_MODULE_TAG,
+		.module_api_version = 1,
+		.hal_api_version = 0,
+		.id = SENSORS_HARDWARE_MODULE_ID,
+		.name = "IIO Sensors",
+		.author = "Chih-Wei Huang",
+		.methods = &sensors_methods,
+		.dso = 0,
+		.reserved = { }
 	},
-	get_sensors_list: sensors_get_sensors_list,
-	set_operation_mode: 0
+	.get_sensors_list = sensors_get_sensors_list,
+	.set_operation_mode = 0
 };
