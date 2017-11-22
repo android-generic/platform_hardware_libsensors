@@ -13,7 +13,7 @@
 /* #define LOG_NDEBUG 0 */
 #define LOG_TAG "HdapsSensors"
 
-#include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -70,7 +70,7 @@ static int event_cnt = 0;
 static unsigned int forced_delay = 0;
 
 struct sensors_poll_context_t {
-	struct sensors_poll_device_t device;
+	struct sensors_poll_device_1 device;
 	int fd;
 };
 
@@ -87,13 +87,6 @@ static int device__activate(struct sensors_poll_device_t *dev, int handle,
 		int enabled) {
 
 	return 0;
-}
-
-static int device__set_delay(struct sensors_poll_device_t *device, int handle,
-		int64_t ns) {
-	forced_delay = ns / 1000;
-	return 0;
-
 }
 
 static int device__poll(struct sensors_poll_device_t *device,
@@ -189,6 +182,19 @@ static int device__poll(struct sensors_poll_device_t *device,
 	return -errno;
 }
 
+static int device__batch(struct sensors_poll_device_1* dev, int sensor_handle,
+		int flags, int64_t sampling_period_ns, int64_t max_report_latency_ns) {
+	ALOGD("%s: dev=%p sensor_handle=%d flags=%d sampling_period_ns=%" PRId64 " max_report_latency_ns=%" PRId64,
+			__FUNCTION__, dev, sensor_handle, flags, sampling_period_ns, max_report_latency_ns);
+	forced_delay = sampling_period_ns / 1000;
+	return EXIT_SUCCESS;
+}
+
+static int device__flush(struct sensors_poll_device_1* dev, int sensor_handle) {
+	ALOGD("%s: dev=%p sensor_handle=%d", __FUNCTION__, dev, sensor_handle);
+	return EXIT_SUCCESS;
+}
+
 static int open_input_device(void) {
 	char *filename;
 	int fd = -1;
@@ -274,8 +280,8 @@ static struct hw_module_methods_t sensors_module_methods = {
 struct sensors_module_t HAL_MODULE_INFO_SYM = {
 	.common = {
 		.tag = HARDWARE_MODULE_TAG,
-		.version_major = 2,
-		.version_minor = 0,
+		.module_api_version = 2,
+		.hal_api_version = 0,
 		.id = SENSORS_HARDWARE_MODULE_ID,
 		.name = "hdaps accelerometer sensor",
 		.author = "Stefan Seidel",
@@ -294,12 +300,13 @@ static int open_sensors(const struct hw_module_t* module, const char* name,
 			sizeof(struct sensors_poll_context_t));
 
 	dev->device.common.tag = HARDWARE_DEVICE_TAG;
-	dev->device.common.version = 0;
+	dev->device.common.version = SENSORS_DEVICE_API_VERSION_1_3;
 	dev->device.common.module = (struct hw_module_t*) module;
 	dev->device.common.close = common__close;
 	dev->device.activate = device__activate;
-	dev->device.setDelay = device__set_delay;
 	dev->device.poll = device__poll;
+	dev->device.batch = device__batch;
+	dev->device.flush = device__flush;
 
 	if ((dev->fd = open_input_device()) < 0) {
 		ALOGE("GSensor get class path error");

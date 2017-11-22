@@ -11,6 +11,7 @@ LOCAL_MODULE := sensors.hdaps
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_SRC_FILES := hdaps.c
+LOCAL_CFLAGS := -Wno-unused-parameter
 include $(BUILD_SHARED_LIBRARY)
 
 include $(CLEAR_VARS)
