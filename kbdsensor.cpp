@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <cinttypes>
 #include <sys/stat.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -48,13 +49,13 @@ template <typename T> struct SensorFd : T {
 template <typename T> SensorFd<T>::SensorFd(const struct hw_module_t *module, struct hw_device_t **device)
 {
 	this->common.tag     = HARDWARE_DEVICE_TAG;
-	this->common.version = 0;
+	this->common.version = SENSORS_DEVICE_API_VERSION_1_3;
 	this->common.module  = const_cast<struct hw_module_t *>(module);
 	*device              = &this->common;
 	ALOGD("%s: module=%p dev=%p", __FUNCTION__, module, *device);
 }
 
-struct SensorPollContext : SensorFd<sensors_poll_device_t> {
+struct SensorPollContext : SensorFd<sensors_poll_device_1> {
   public:
 	SensorPollContext(const struct hw_module_t *module, struct hw_device_t **device);
 	~SensorPollContext();
@@ -63,8 +64,9 @@ struct SensorPollContext : SensorFd<sensors_poll_device_t> {
   private:
 	static int poll_close(struct hw_device_t *dev);
 	static int poll_activate(struct sensors_poll_device_t *dev, int handle, int enabled);
-	static int poll_setDelay(struct sensors_poll_device_t *dev, int handle, int64_t ns);
 	static int poll_poll(struct sensors_poll_device_t *dev, sensors_event_t *data, int count);
+	static int poll_batch(struct sensors_poll_device_1* dev, int sensor_handle, int flags, int64_t sampling_period_ns, int64_t max_report_latency_ns);
+	static int poll_flush(struct sensors_poll_device_1* dev, int sensor_handle);
 
 	int doPoll(sensors_event_t *data, int count);
 
@@ -77,19 +79,20 @@ struct SensorPollContext : SensorFd<sensors_poll_device_t> {
 
 	bool enabled;
 	int rotation;
-	struct timespec delay;
+	int64_t sampling_period_ns;
 	struct pollfd pfd;
 	sensors_event_t orients[4];
 	KbdSensorKeys *ktype;
 };
 
 SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw_device_t **device)
-      : SensorFd<sensors_poll_device_t>(module, device), enabled(false), rotation(ROT_0), ktype(KeysType)
+      : SensorFd<sensors_poll_device_1>(module, device), enabled(false), rotation(ROT_0), ktype(KeysType)
 {
 	common.close = poll_close;
 	activate     = poll_activate;
-	setDelay     = poll_setDelay;
 	poll         = poll_poll;
+	batch        = poll_batch;
+	flush        = poll_flush;
 
 	int &fd = pfd.fd;
 	fd = -1;
@@ -161,9 +164,6 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 	orients[ROT_270].acceleration.y = 0.0;
 	orients[ROT_270].acceleration.z = -sin_angle;
 
-	delay.tv_sec = 0;
-	delay.tv_nsec = 200000000L;
-
 	ALOGD("%s: dev=%p fd=%d", __FUNCTION__, this, fd);
 }
 
@@ -187,12 +187,6 @@ int SensorPollContext::poll_activate(struct sensors_poll_device_t *dev, int hand
 	return 0;
 }
 
-int SensorPollContext::poll_setDelay(struct sensors_poll_device_t *dev, int handle, int64_t ns)
-{
-	ALOGD("%s: dev=%p delay-ns=%lld", __FUNCTION__, dev, ns);
-	return 0;
-}
-
 int SensorPollContext::poll_poll(struct sensors_poll_device_t *dev, sensors_event_t *data, int count)
 {
 	ALOGV("%s: dev=%p data=%p count=%d", __FUNCTION__, dev, data, count);
@@ -200,9 +194,23 @@ int SensorPollContext::poll_poll(struct sensors_poll_device_t *dev, sensors_even
 	return ctx->doPoll(data, count);
 }
 
+int SensorPollContext::poll_batch(struct sensors_poll_device_1* dev, int sensor_handle, int flags, int64_t sampling_period_ns, int64_t max_report_latency_ns)
+{
+	ALOGD("%s: dev=%p sensor_handle=%d flags=%d sampling_period_ns=%" PRId64 " max_report_latency_ns=%" PRId64,
+			__FUNCTION__, dev, sensor_handle, flags, sampling_period_ns, max_report_latency_ns);
+	SensorPollContext *ctx = reinterpret_cast<SensorPollContext *>(dev);
+	ctx->sampling_period_ns = sampling_period_ns;
+	return EXIT_SUCCESS;
+}
+
+int SensorPollContext::poll_flush(struct sensors_poll_device_1* dev, int sensor_handle)
+{
+	ALOGD("%s: dev=%p sensor_handle=%d", __FUNCTION__, dev, sensor_handle);
+	return EXIT_SUCCESS;
+}
+
 int SensorPollContext::doPoll(sensors_event_t *data, int count)
 {
-	nanosleep(&delay, 0);
 	if (!isValid())
 		return 0;
 
@@ -220,7 +228,7 @@ int SensorPollContext::doPoll(sensors_event_t *data, int count)
 		struct input_event iev;
 		size_t res = ::read(pfd.fd, &iev, sizeof(iev));
 		if (res < sizeof(iev)) {
-			ALOGW("insufficient input data(%d)? fd=%d", res, pfd.fd);
+			ALOGW("insufficient input data(%zu)? fd=%d", res, pfd.fd);
 			continue;
 		}
 		ALOGV("type=%d scancode=%d value=%d from fd=%d", iev.type, iev.code, iev.value, pfd.fd);
@@ -272,15 +280,14 @@ int SensorPollContext::doPoll(sensors_event_t *data, int count)
 	}
 
 	int cnt;
-	struct timespec t;
+	struct timespec t = { 0, 0 };
 	data[0] = orients[rotation];
-	t.tv_sec = t.tv_nsec = 0;
 	clock_gettime(CLOCK_MONOTONIC, &t);
 	data[0].timestamp = int64_t(t.tv_sec) * 1000000000LL + t.tv_nsec;
-	for (cnt = 1; cnt < keys[7] && cnt < count; ++cnt) {
+	struct timespec delay = { 0, static_cast<long>(sampling_period_ns) };
+	for (cnt = 1; !nanosleep(&delay, 0) && cnt < keys[7] && cnt < count; ++cnt) {
 		data[cnt] = data[cnt - 1];
-		data[cnt].timestamp += delay.tv_nsec;
-		nanosleep(&delay, 0);
+		data[cnt].timestamp += sampling_period_ns;
 	}
 	ALOGV("%s: dev=%p fd=%d rotation=%d cnt=%d", __FUNCTION__, this, pfd.fd, rotation * 90, cnt);
 	return cnt;
@@ -295,46 +302,46 @@ static int open_kbd_sensor(const struct hw_module_t *module, const char *id, str
 
 static struct sensor_t sSensorListInit[] = {
 	{
-		name: "Kbd Orientation Sensor",
-		vendor: "Android-x86 Open Source Project",
-		version: 1,
-		handle: ID_ACCELERATION,
-		type: SENSOR_TYPE_ACCELEROMETER,
-		maxRange: 2.8f,
-		resolution: 1.0f/4032.0f,
-		power: 3.0f,
-		minDelay: 0,
-		fifoReservedEventCount: 0,
-		fifoMaxEventCount: 0,
-		stringType: SENSOR_STRING_TYPE_ACCELEROMETER,
-		requiredPermission: "",
-		maxDelay: 0,
-		flags: SENSOR_FLAG_ONE_SHOT_MODE,
-		reserved: { }
+		.name = "Kbd Orientation Sensor",
+		.vendor = "Android-x86 Open Source Project",
+		.version = 2,
+		.handle = ID_ACCELERATION,
+		.type = SENSOR_TYPE_ACCELEROMETER,
+		.maxRange = 2.8f,
+		.resolution = 1.0f/4032.0f,
+		.power = 3.0f,
+		.minDelay = 0,
+		.fifoReservedEventCount = 0,
+		.fifoMaxEventCount = 0,
+		.stringType = 0,
+		.requiredPermission = 0,
+		.maxDelay = 2000,
+		.flags = SENSOR_FLAG_CONTINUOUS_MODE,
+		.reserved = { }
 	}
 };
 
-static int sensors_get_sensors_list(struct sensors_module_t *module, struct sensor_t const **list)
+static int sensors_get_sensors_list(struct sensors_module_t *, struct sensor_t const **list)
 {
 	*list = sSensorListInit;
 	return sizeof(sSensorListInit) / sizeof(struct sensor_t);
 }
 
 static struct hw_module_methods_t sensors_methods = {
-	open: open_kbd_sensor
+	.open = open_kbd_sensor
 };
 
 struct sensors_module_t HAL_MODULE_INFO_SYM = {
-	common: {
-		tag: HARDWARE_MODULE_TAG,
-		version_major: 2,
-		version_minor: 3,
-		id: SENSORS_HARDWARE_MODULE_ID,
-		name: "Kbd Orientation Sensor",
-		author: "Chih-Wei Huang",
-		methods: &sensors_methods,
-		dso: 0,
-		reserved: { }
+	.common = {
+		.tag = HARDWARE_MODULE_TAG,
+		.module_api_version = 2,
+		.hal_api_version = 0,
+		.id = SENSORS_HARDWARE_MODULE_ID,
+		.name = "Kbd Orientation Sensor",
+		.author = "Chih-Wei Huang",
+		.methods = &sensors_methods,
+		.dso = 0,
+		.reserved = { }
 	},
-	get_sensors_list: sensors_get_sensors_list
+	.get_sensors_list = sensors_get_sensors_list
 };
