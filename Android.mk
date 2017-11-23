@@ -48,4 +48,5 @@ LOCAL_MODULE := sensors.w500
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_SRC_FILES := w500_sensor.c
+LOCAL_CFLAGS := -Wno-unused-parameter
 include $(BUILD_SHARED_LIBRARY)

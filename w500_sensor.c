@@ -16,6 +16,7 @@
 #include <cutils/native_handle.h>
 #include <dirent.h>
 #include <math.h>
+#include <inttypes.h>
 #include <hardware/sensors.h>
 
 #define DRIVER_DESC 			"Acer BMA150 accelerometer"
@@ -37,7 +38,7 @@
 #define VALID_ROTATE_MASK		(7 << 0)
 
 struct sensor_context {
-	struct sensors_poll_device_t device;
+	struct sensors_poll_device_1 device;
 	int accel_fd;
 
 	struct timespec delay;
@@ -135,17 +136,6 @@ static int context__activate(struct sensors_poll_device_t *dev,
 	}
 
 	return -EINVAL;
-}
-
-static int context__setDelay(struct sensors_poll_device_t *dev,
-				int handle, int64_t ns)
-{
-	struct sensor_context* ctx = (struct sensor_context *)dev;
-
-	ctx->delay.tv_sec = 0;
-	ctx->delay.tv_nsec = ns;
-
-	return 0;
 }
 
 static int context__close(struct hw_device_t *dev)
@@ -352,6 +342,24 @@ static int context__poll(struct sensors_poll_device_t *dev, sensors_event_t *dat
 	return 0;
 }
 
+static int context__batch(struct sensors_poll_device_1* dev, int sensor_handle,
+		int flags, int64_t sampling_period_ns, int64_t max_report_latency_ns)
+{
+	ALOGD("%s: dev=%p sensor_handle=%d flags=%d sampling_period_ns=%" PRId64 " max_report_latency_ns=%" PRId64,
+			__FUNCTION__, dev, sensor_handle, flags, sampling_period_ns, max_report_latency_ns);
+
+	struct sensor_context* ctx = (struct sensor_context *)dev;
+	ctx->delay.tv_sec = 0;
+	ctx->delay.tv_nsec = sampling_period_ns;
+	return EXIT_SUCCESS;
+}
+
+static int context__flush(struct sensors_poll_device_1* dev, int sensor_handle)
+{
+	ALOGD("%s: dev=%p sensor_handle=%d", __FUNCTION__, dev, sensor_handle);
+	return EXIT_SUCCESS;
+}
+
 static const struct sensor_t sensor_list[] = {
 	[0] = {
 		.name		= "W500 Ambient Light sensor",
@@ -418,13 +426,14 @@ static int open_sensors(const struct hw_module_t *module, const char* id,
 
 	/* Do common setup */
 	ctx->device.common.tag = HARDWARE_DEVICE_TAG;
-	ctx->device.common.version = 0;
+	ctx->device.common.version = SENSORS_DEVICE_API_VERSION_1_3;
 	ctx->device.common.module = (struct hw_module_t *)module;
 	ctx->device.common.close = context__close;
 
 	ctx->device.activate = context__activate;
-	ctx->device.setDelay = context__setDelay;
 	ctx->device.poll = context__poll;
+	ctx->device.batch = context__batch;
+	ctx->device.flush = context__flush;
 
 	*device = &ctx->device.common;
 
@@ -444,8 +453,8 @@ static struct hw_module_methods_t sensors_module_methods = {
 struct sensors_module_t HAL_MODULE_INFO_SYM = {
 	.common = {
 		.tag		= HARDWARE_MODULE_TAG,
-		.version_major	= 1,
-		.version_minor	= 0,
+		.module_api_version = 1,
+		.hal_api_version = 0,
 		.id		= SENSORS_HARDWARE_MODULE_ID,
 		.name		= "W500 SENSORS Module",
 		.author		= "Marek Vasut",
