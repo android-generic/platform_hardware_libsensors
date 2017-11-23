@@ -92,7 +92,17 @@ SensorEvent::SensorEvent(int32_t id, int32_t t)
 	timestamp = int64_t(ts.tv_sec) * NSEC_PER_SEC + ts.tv_nsec;
 }
 
-class SensorBase : public sensor_t {
+class sensor_base : public sensor_t {
+  protected:
+	sensor_base() { memset(this, 0, sizeof(*this)); }
+
+	bool enabled;
+	char *path;
+	const char ***nodes;
+	struct timespec delay;
+};
+
+class SensorBase : public sensor_base {
   public:
 	SensorBase();
 	virtual ~SensorBase();
@@ -107,17 +117,10 @@ class SensorBase : public sensor_t {
 	int read_sysfs_str(const char *file, char *buf);
 	int read_sysfs_int(const char *file);
 	float read_sysfs_float(const char *file);
-
-	bool enabled;
-	char *path;
-	const char ***nodes;
-	struct timespec delay;
 };
 
 SensorBase::SensorBase()
 {
-	memset(this, 0, sizeof(SensorBase));
-
 	vendor = "Android-x86 Open Source Project";
 	version = 1;
 
