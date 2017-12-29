@@ -14,6 +14,7 @@ LOCAL_SRC_FILES := hdaps.c
 LOCAL_CFLAGS := -Wno-unused-parameter
 include $(BUILD_SHARED_LIBRARY)
 
+ifeq ($(USE_MY_SENSORS_IIO),true)
 include $(CLEAR_VARS)
 LOCAL_SHARED_LIBRARIES := liblog libcutils
 LOCAL_MODULE := sensors.iio
@@ -21,6 +22,7 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_SRC_FILES := iio-sensors.cpp
 include $(BUILD_SHARED_LIBRARY)
+endif
 
 include $(CLEAR_VARS)
 LOCAL_PRELINK_MODULE := false
