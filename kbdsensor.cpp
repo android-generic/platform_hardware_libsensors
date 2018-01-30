@@ -64,6 +64,7 @@ struct SensorPollContext : SensorFd<sensors_poll_device_1> {
   private:
 	static int poll_close(struct hw_device_t *dev);
 	static int poll_activate(struct sensors_poll_device_t *dev, int handle, int enabled);
+	static int poll_setDelay(struct sensors_poll_device_t *dev, int handle, int64_t ns);
 	static int poll_poll(struct sensors_poll_device_t *dev, sensors_event_t *data, int count);
 	static int poll_batch(struct sensors_poll_device_1* dev, int sensor_handle, int flags, int64_t sampling_period_ns, int64_t max_report_latency_ns);
 	static int poll_flush(struct sensors_poll_device_1* dev, int sensor_handle);
@@ -90,6 +91,7 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 {
 	common.close = poll_close;
 	activate     = poll_activate;
+	setDelay     = poll_setDelay;
 	poll         = poll_poll;
 	batch        = poll_batch;
 	flush        = poll_flush;
@@ -187,6 +189,14 @@ int SensorPollContext::poll_activate(struct sensors_poll_device_t *dev, int hand
 	return 0;
 }
 
+int SensorPollContext::poll_setDelay(struct sensors_poll_device_t *dev, int handle, int64_t ns)
+{
+	ALOGD("%s: dev=%p handle=%d ns=%" PRId64, __FUNCTION__, dev, handle, ns);
+	SensorPollContext *ctx = reinterpret_cast<SensorPollContext *>(dev);
+	ctx->sampling_period_ns = ns;
+	return EXIT_SUCCESS;
+}
+
 int SensorPollContext::poll_poll(struct sensors_poll_device_t *dev, sensors_event_t *data, int count)
 {
 	ALOGV("%s: dev=%p data=%p count=%d", __FUNCTION__, dev, data, count);
@@ -198,9 +208,7 @@ int SensorPollContext::poll_batch(struct sensors_poll_device_1* dev, int sensor_
 {
 	ALOGD("%s: dev=%p sensor_handle=%d flags=%d sampling_period_ns=%" PRId64 " max_report_latency_ns=%" PRId64,
 			__FUNCTION__, dev, sensor_handle, flags, sampling_period_ns, max_report_latency_ns);
-	SensorPollContext *ctx = reinterpret_cast<SensorPollContext *>(dev);
-	ctx->sampling_period_ns = sampling_period_ns;
-	return EXIT_SUCCESS;
+	return poll_setDelay(&dev->v0, sensor_handle, sampling_period_ns);
 }
 
 int SensorPollContext::poll_flush(struct sensors_poll_device_1* dev, int sensor_handle)

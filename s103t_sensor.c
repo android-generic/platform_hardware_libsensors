@@ -37,6 +37,12 @@ static int context__activate(struct sensors_poll_device_t *dev, int handle, int 
     return 0;
 }
 
+static int context__setDelay(struct sensors_poll_device_t *dev, int handle, int64_t ns)
+{
+    ALOGD("%s: called", __FUNCTION__);
+    return 0;
+}
+
 static int context__close(struct hw_device_t *dev)
 {
     ALOGD("%s: called", __FUNCTION__);
@@ -189,6 +195,7 @@ static int open_sensors(const struct hw_module_t* module, const char* id, struct
 
     ctx->device.common.close = context__close;
     ctx->device.activate = context__activate;
+    ctx->device.setDelay = context__setDelay;
     ctx->device.poll = context__poll;
     ctx->device.batch = context__batch;
     ctx->device.flush = context__flush;

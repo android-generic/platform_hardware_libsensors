@@ -138,6 +138,17 @@ static int context__activate(struct sensors_poll_device_t *dev,
 	return -EINVAL;
 }
 
+static int context__setDelay(struct sensors_poll_device_t *dev,
+				int handle, int64_t ns)
+{
+	struct sensor_context* ctx = (struct sensor_context *)dev;
+
+	ctx->delay.tv_sec = 0;
+	ctx->delay.tv_nsec = ns;
+
+	return 0;
+}
+
 static int context__close(struct hw_device_t *dev)
 {
 	struct sensor_context* ctx = (struct sensor_context *)dev;
@@ -348,10 +359,7 @@ static int context__batch(struct sensors_poll_device_1* dev, int sensor_handle,
 	ALOGD("%s: dev=%p sensor_handle=%d flags=%d sampling_period_ns=%" PRId64 " max_report_latency_ns=%" PRId64,
 			__FUNCTION__, dev, sensor_handle, flags, sampling_period_ns, max_report_latency_ns);
 
-	struct sensor_context* ctx = (struct sensor_context *)dev;
-	ctx->delay.tv_sec = 0;
-	ctx->delay.tv_nsec = sampling_period_ns;
-	return EXIT_SUCCESS;
+	return context__setDelay(&dev->v0, sensor_handle, sampling_period_ns);
 }
 
 static int context__flush(struct sensors_poll_device_1* dev, int sensor_handle)
@@ -431,6 +439,7 @@ static int open_sensors(const struct hw_module_t *module, const char* id,
 	ctx->device.common.close = context__close;
 
 	ctx->device.activate = context__activate;
+	ctx->device.setDelay = context__setDelay;
 	ctx->device.poll = context__poll;
 	ctx->device.batch = context__batch;
 	ctx->device.flush = context__flush;

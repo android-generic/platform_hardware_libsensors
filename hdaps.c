@@ -89,6 +89,13 @@ static int device__activate(struct sensors_poll_device_t *dev, int handle,
 	return 0;
 }
 
+static int device__set_delay(struct sensors_poll_device_t *device, int handle,
+		int64_t ns) {
+	forced_delay = ns / 1000;
+	return 0;
+
+}
+
 static int device__poll(struct sensors_poll_device_t *device,
 		sensors_event_t *data, int count) {
 
@@ -304,6 +311,7 @@ static int open_sensors(const struct hw_module_t* module, const char* name,
 	dev->device.common.module = (struct hw_module_t*) module;
 	dev->device.common.close = common__close;
 	dev->device.activate = device__activate;
+	dev->device.setDelay = device__set_delay;
 	dev->device.poll = device__poll;
 	dev->device.batch = device__batch;
 	dev->device.flush = device__flush;
