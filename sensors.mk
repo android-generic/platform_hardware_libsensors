@@ -3,6 +3,7 @@
 PRODUCT_PACKAGES := \
     sensors.hdaps \
     sensors.iio \
+    sensors.iio-old \
     sensors.kbd \
     sensors.s103t \
     sensors.w500 \
