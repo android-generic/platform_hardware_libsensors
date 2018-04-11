@@ -43,16 +43,14 @@ struct KbdSensorKeys {
 const int ID_ACCELERATION = (SENSORS_HANDLE_BASE + 0);
 
 template <typename T> struct SensorFd : T {
-	SensorFd(const struct hw_module_t *module, struct hw_device_t **device);
+	SensorFd(const struct hw_module_t *module);
 };
 
-template <typename T> SensorFd<T>::SensorFd(const struct hw_module_t *module, struct hw_device_t **device)
+template <typename T> SensorFd<T>::SensorFd(const struct hw_module_t *module)
 {
 	this->common.tag     = HARDWARE_DEVICE_TAG;
 	this->common.version = SENSORS_DEVICE_API_VERSION_1_3;
 	this->common.module  = const_cast<struct hw_module_t *>(module);
-	*device              = &this->common;
-	ALOGD("%s: module=%p dev=%p", __FUNCTION__, module, *device);
 }
 
 struct SensorPollContext : SensorFd<sensors_poll_device_1> {
@@ -87,7 +85,7 @@ struct SensorPollContext : SensorFd<sensors_poll_device_1> {
 };
 
 SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw_device_t **device)
-      : SensorFd<sensors_poll_device_1>(module, device), enabled(false), rotation(ROT_0), ktype(KeysType)
+      : SensorFd<sensors_poll_device_1>(module), enabled(false), rotation(ROT_0), ktype(KeysType)
 {
 	common.close = poll_close;
 	activate     = poll_activate;
@@ -140,8 +138,13 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 			close(fd);
 			fd = -1;
 		}
-		ALOGI_IF(fd >= 0, "Open %s ok, fd=%d", name, fd);
 		closedir(dir);
+		if (fd < 0) {
+			ALOGW("could not find any kbdsensor device");
+			return;
+		}
+		*device = &common;
+		ALOGI("Open %s ok, fd=%d", name, fd);
 	}
 
 	pfd.events = POLLIN;
@@ -166,7 +169,7 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 	orients[ROT_270].acceleration.y = 0.0;
 	orients[ROT_270].acceleration.z = -sin_angle;
 
-	ALOGD("%s: dev=%p fd=%d", __FUNCTION__, this, fd);
+	ALOGD("%s: module=%p dev=%p fd=%d", __FUNCTION__, module, this, fd);
 }
 
 SensorPollContext::~SensorPollContext()
