@@ -169,10 +169,9 @@ int SensorBase::activate(bool e)
 	return 0;
 }
 
-int SensorBase::readEvents(sensors_event_t *data, int)
+int SensorBase::readEvents(sensors_event_t *, int)
 {
 	nanosleep(&delay, 0);
-	SensorEvent *e = new (data) SensorEvent(handle, type);
 	return 1;
 }
 

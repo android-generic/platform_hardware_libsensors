@@ -165,8 +165,6 @@ static int poll_data(struct sensors_poll_device_t *dev, sensors_event_t *data)
 	struct input_event iev;
 	struct sensor_context *ctx = (struct sensor_context *)dev;
 	size_t res;
-	float val;
-	int i;
 
 	/* Orientation sensor */
 	for (;;) {
@@ -416,7 +414,6 @@ static int open_sensors(const struct hw_module_t *module, const char* id,
 			struct hw_device_t **device)
 {
 	struct sensor_context *ctx;
-	int fd;
 
 	if (strcmp(id, SENSORS_HARDWARE_POLL))
 		return -EINVAL;
@@ -448,9 +445,7 @@ static int open_sensors(const struct hw_module_t *module, const char* id,
 
 	return 0;
 
-err_light:
 	close(ctx->accel_fd);
-err_accel:
 	free(ctx);
 	return -ENOMEM;
 }
