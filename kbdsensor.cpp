@@ -48,6 +48,7 @@ template <typename T> struct SensorFd : T {
 
 template <typename T> SensorFd<T>::SensorFd(const struct hw_module_t *module)
 {
+	memset(this, 0, sizeof(*this));
 	this->common.tag     = HARDWARE_DEVICE_TAG;
 	this->common.version = SENSORS_DEVICE_API_VERSION_1_3;
 	this->common.module  = const_cast<struct hw_module_t *>(module);
