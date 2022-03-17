@@ -85,6 +85,14 @@ struct SensorPollContext : SensorFd<sensors_poll_device_1> {
 	KbdSensorKeys *ktype;
 };
 
+void parse_kbd_keys_from_prop(char *prop, KbdSensorKeys *ktype)
+{
+	strlcpy(ktype->name, strsep(&prop, ","), sizeof(ktype->name));
+	sscanf(prop, "%d,%d,%d,%d,%d,%d,%d,%d", ktype->keys,
+			ktype->keys + 1, ktype->keys + 2, ktype->keys + 3, ktype->keys + 4, ktype->keys + 5, ktype->keys + 6, ktype->keys + 7);
+	ALOGD("[%s]: %d,%d,%d,...", ktype->name, ktype->keys[0], ktype->keys[1], ktype->keys[2]);
+}
+
 SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw_device_t **device)
       : SensorFd<sensors_poll_device_1>(module), enabled(false), rotation(ROT_0), ktype(KeysType)
 {
@@ -100,8 +108,7 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 	const char *dirname = "/dev/input";
 	char prop[PROPERTY_VALUE_MAX];
 	if (property_get("hal.sensors.kbd.keys", prop, 0))
-		sscanf(prop, "%s,%d,%d,%d,%d,%d,%d,%d,%d", ktype->name, ktype->keys,
-				ktype->keys + 1, ktype->keys + 2, ktype->keys + 3, ktype->keys + 4, ktype->keys + 5, ktype->keys + 6, ktype->keys + 7);
+		parse_kbd_keys_from_prop(prop, ktype);
 	else if (property_get("hal.sensors.kbd.type", prop, 0))
 		ktype = &KeysType[atoi(prop)];
 	else
