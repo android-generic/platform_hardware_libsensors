@@ -225,7 +225,7 @@ int SensorPollContext::poll_batch(struct sensors_poll_device_1* dev, int sensor_
 int SensorPollContext::poll_flush(struct sensors_poll_device_1* dev, int sensor_handle)
 {
 	ALOGD("%s: dev=%p sensor_handle=%d", __FUNCTION__, dev, sensor_handle);
-	return EXIT_SUCCESS;
+	return -EINVAL;
 }
 
 int SensorPollContext::doPoll(sensors_event_t *data, int count)
