@@ -10,6 +10,9 @@ cc_library_shared {
         "liblog",
         "libcutils",
     ],
+    header_libs: [
+        "libhardware_headers",
+    ],
 }
 
 cc_library_shared {
@@ -20,6 +23,9 @@ cc_library_shared {
     shared_libs: [
         "liblog",
         "libcutils",
+    ],
+    header_libs: [
+        "libhardware_headers",
     ],
 }
 
@@ -34,4 +40,7 @@ cc_library_shared {
         "libcutils",
     ],
     required: ["sensors.iio"],
+    header_libs: [
+        "libhardware_headers",
+    ],
 }
