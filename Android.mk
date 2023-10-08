@@ -55,3 +55,14 @@ LOCAL_SRC_FILES := w500_sensor.c
 LOCAL_CFLAGS := -Wno-unused-parameter
 LOCAL_VENDOR_MODULE := true
 include $(BUILD_SHARED_LIBRARY)
+
+include $(CLEAR_VARS)
+LOCAL_PRELINK_MODULE := false
+LOCAL_SHARED_LIBRARIES := liblog libcutils
+LOCAL_MODULE := sensors.deck
+LOCAL_MODULE_TAGS := optional
+LOCAL_MODULE_RELATIVE_PATH := hw
+LOCAL_SRC_FILES := steamdeck_controller.c
+LOCAL_CFLAGS := -Wno-unused-parameter
+LOCAL_VENDOR_MODULE := true
+include $(BUILD_SHARED_LIBRARY)

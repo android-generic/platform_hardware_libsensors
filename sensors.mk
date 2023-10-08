@@ -7,3 +7,4 @@ PRODUCT_PACKAGES := \
     sensors.kbd \
     sensors.s103t \
     sensors.w500 \
+    sensors.deck \
