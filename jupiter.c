@@ -857,7 +857,7 @@ static int context__poll(struct sensors_poll_device_t *dev, sensors_event_t *dat
 
 		struct timespec t;
 		memset(&t, 0, sizeof(t));
-		clock_gettime(CLOCK_MONOTONIC, &t);
+		clock_gettime(CLOCK_BOOTTIME, &t);
 
 		if(gyro_flush){
 			data[offset].version = META_DATA_VERSION;
