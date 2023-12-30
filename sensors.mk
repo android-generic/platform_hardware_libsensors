@@ -2,4 +2,5 @@
 
 PRODUCT_PACKAGES := \
     sensors.iio \
-    sensors.kbd
+    sensors.kbd \
+    sensors.jupiter
