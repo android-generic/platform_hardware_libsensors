@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <dirent.h>
+#include <math.h>
 
 /* Android */
 #define LOG_TAG "Steam Deck controller driver"
@@ -39,6 +40,9 @@
 #include <hardware/sensors.h>
 
 #define BIT(data, bit) (data & (1 << bit))
+
+#define DEFAULT_DEADZONE 4096
+
 
 // deck input state parsing
 struct deck_input_state{
@@ -450,6 +454,7 @@ void *deck_input_state_poller_thread(struct deck_input_state_poller_thread_args 
 		if(read_size == -1){
 			ALOGW("error when reading from opened hidraw device");
 			close(fd);
+			fd = -1;
 			continue;
 		}
 		if(read_size != 64){
@@ -539,9 +544,11 @@ void *controller_uinput_thread(struct controller_uinput_thread_args *args){
 				ioctl(staging_fd, UI_SET_KEYBIT, BTN_TR) ||
 				ioctl(staging_fd, UI_SET_KEYBIT, BTN_SELECT) ||
 				ioctl(staging_fd, UI_SET_KEYBIT, BTN_START) ||
-				ioctl(staging_fd, UI_SET_KEYBIT, BTN_MODE) ||
+				//ioctl(staging_fd, UI_SET_KEYBIT, BTN_MODE) ||
+				ioctl(staging_fd, UI_SET_KEYBIT, KEY_HOMEPAGE) ||
 				ioctl(staging_fd, UI_SET_KEYBIT, BTN_THUMBL) ||
-				ioctl(staging_fd, UI_SET_KEYBIT, BTN_THUMBR) /* ||
+				ioctl(staging_fd, UI_SET_KEYBIT, BTN_THUMBR) ||
+				ioctl(staging_fd, UI_SET_KEYBIT, KEY_APPSELECT) /* ||
 				ioctl(staging_fd, UI_SET_KEYBIT, BTN_DPAD_UP) ||
 				ioctl(staging_fd, UI_SET_KEYBIT, BTN_DPAD_DOWN) ||
 				ioctl(staging_fd, UI_SET_KEYBIT, BTN_DPAD_LEFT) ||
@@ -556,10 +563,14 @@ void *controller_uinput_thread(struct controller_uinput_thread_args *args){
 				ioctl(staging_fd, UI_SET_EVBIT, EV_ABS) ||
 				ioctl(staging_fd, UI_SET_ABSBIT, ABS_X) ||
 				ioctl(staging_fd, UI_SET_ABSBIT, ABS_Y) ||
+				//ioctl(staging_fd, UI_SET_ABSBIT, ABS_Z) ||
+				ioctl(staging_fd, UI_SET_ABSBIT, ABS_BRAKE) ||
+				//ioctl(staging_fd, UI_SET_ABSBIT, ABS_RX) ||
 				ioctl(staging_fd, UI_SET_ABSBIT, ABS_Z) ||
-				ioctl(staging_fd, UI_SET_ABSBIT, ABS_RX) ||
-				ioctl(staging_fd, UI_SET_ABSBIT, ABS_RY) ||
+				//ioctl(staging_fd, UI_SET_ABSBIT, ABS_RY) ||
 				ioctl(staging_fd, UI_SET_ABSBIT, ABS_RZ) ||
+				//ioctl(staging_fd, UI_SET_ABSBIT, ABS_RZ) ||
+				ioctl(staging_fd, UI_SET_ABSBIT, ABS_GAS) ||
 				ioctl(staging_fd, UI_SET_ABSBIT, ABS_HAT0X) ||
 				ioctl(staging_fd, UI_SET_ABSBIT, ABS_HAT0Y)
 			)
@@ -583,17 +594,25 @@ void *controller_uinput_thread(struct controller_uinput_thread_args *args){
 			}
 			SETUP_ABS(ABS_X, -32767, 32767, 0)
 			SETUP_ABS(ABS_Y, -32767, 32767, 0)
-			SETUP_ABS(ABS_Z, 0, 32767, 0)
-			SETUP_ABS(ABS_RX, -32767, 32767, 0)
-			SETUP_ABS(ABS_RY, -32767, 32767, 0)
-			SETUP_ABS(ABS_RZ, 0, 32767, 0)
+			//SETUP_ABS(ABS_Z, 0, 32767, 0)
+			SETUP_ABS(ABS_BRAKE, 0, 32767, 0)
+			//SETUP_ABS(ABS_RX, -32767, 32767, 0)
+			SETUP_ABS(ABS_Z, -32767, 32767, 0)
+			//SETUP_ABS(ABS_RY, -32767, 32767, 0)
+			SETUP_ABS(ABS_RZ, -32767, 32767, 0)
+			//SETUP_ABS(ABS_RZ, 0, 32767, 0)
+			SETUP_ABS(ABS_GAS, 0, 32767, 0)
 			SETUP_ABS(ABS_HAT0X, -1, 1, 0)
 			SETUP_ABS(ABS_HAT0Y, -1, 1, 0)
 			struct uinput_setup usetup;
 			memset(&usetup, 0, sizeof(usetup));
 			usetup.id.bustype = BUS_USB;
-			usetup.id.vendor = 0x045e;
-			usetup.id.product = 0x02ea;
+			// xbox one controller keylayout
+			//usetup.id.vendor = 0x045e;
+			//usetup.id.product = 0x02ea;
+			// logitech bluetooth wireless gamepad (RedHawk) keylayout
+			usetup.id.vendor = 0x046d;
+			usetup.id.product = 0xb501;
 			strcpy(usetup.name, "Steam Deck Controller");
 			if(ioctl(staging_fd, UI_DEV_SETUP, &usetup) || ioctl(staging_fd, UI_DEV_CREATE)){
 				ALOGW("failed finishing uinput device creation");
@@ -639,15 +658,29 @@ void *controller_uinput_thread(struct controller_uinput_thread_args *args){
 		CHECK_BTN(right_shoulder, BTN_TR)
 		CHECK_BTN(left_menu, BTN_SELECT)
 		CHECK_BTN(right_menu, BTN_START)
-		CHECK_BTN(steam_logo, BTN_MODE)
+		//CHECK_BTN(steam_logo, BTN_MODE)
+		CHECK_BTN(steam_logo, KEY_HOMEPAGE)
 		CHECK_BTN(left_stick_click, BTN_THUMBL)
 		CHECK_BTN(right_stick_click, BTN_THUMBR)
+		CHECK_BTN(quick_access, KEY_APPSELECT)
 		/*
 		CHECK_BTN(up, BTN_DPAD_UP)
 		CHECK_BTN(down, BTN_DPAD_DOWN)
 		CHECK_BTN(left, BTN_DPAD_LEFT)
 		CHECK_BTN(right, BTN_DPAD_RIGHT)
 		*/
+
+		// default deadzone
+		// used to be done by x360 keylayout by default but we're switching to another kl for KEY_APPSELECT
+		if(abs(state.left_stick_x) < DEFAULT_DEADZONE && abs(state.left_stick_y) < DEFAULT_DEADZONE){
+			state.left_stick_x = 0;
+			state.left_stick_y = 0;
+		}
+
+		if(abs(state.right_stick_x) < DEFAULT_DEADZONE && abs(state.right_stick_y) < DEFAULT_DEADZONE){
+			state.right_stick_x = 0;
+			state.right_stick_y = 0;
+		}
 
 		#define CHECK_ABS(v, a, m, o) { \
 			if(last_state.v != state.v){ \
@@ -660,10 +693,14 @@ void *controller_uinput_thread(struct controller_uinput_thread_args *args){
 		}
 		CHECK_ABS(left_stick_x, ABS_X, 1, 0)
 		CHECK_ABS(left_stick_y, ABS_Y, -1, 0)
-		CHECK_ABS(left_trigger, ABS_Z, 1, 0)
-		CHECK_ABS(right_stick_x, ABS_RX, 1, 0)
-		CHECK_ABS(right_stick_y, ABS_RY, -1, 0)
-		CHECK_ABS(right_trigger, ABS_RZ, 1, 0)
+		//CHECK_ABS(left_trigger, ABS_Z, 1, 0)
+		CHECK_ABS(left_trigger, ABS_BRAKE, 1, 0)
+		//CHECK_ABS(right_stick_x, ABS_RX, 1, 0)
+		CHECK_ABS(right_stick_x, ABS_Z, 1, 0)
+		//CHECK_ABS(right_stick_y, ABS_RY, -1, 0)
+		CHECK_ABS(right_stick_y, ABS_RZ, -1, 0)
+		//CHECK_ABS(right_trigger, ABS_RZ, 1, 0)
+		CHECK_ABS(right_trigger, ABS_GAS, 1, 0)
 
 		#define CHECK_HAT(vn, vp, a) { \
 			if(last_state.vn != state.vn || last_state.vp != state.vp){ \
