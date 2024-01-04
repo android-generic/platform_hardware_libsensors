@@ -1107,6 +1107,8 @@ static int context__poll(struct sensors_poll_device_t *dev, sensors_event_t *dat
 		if(light_on){
 			memcpy(&data[offset], &lightsensor_data, sizeof(sensors_event_t));
 			data[offset].sensor = ID_LIGHT;
+			// scale to match one size match all config_autoBrightnessLevels
+			data[offset].light = data[offset].light * 15.0;
 			offset++;
 		}
 
