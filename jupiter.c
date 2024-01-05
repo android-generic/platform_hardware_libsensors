@@ -22,8 +22,10 @@
 #include <unistd.h>
 #include <endian.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <inttypes.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <time.h>
 
 /* C */
@@ -38,6 +40,9 @@
 #define LOG_TAG "Steam Deck controller driver"
 #include <cutils/log.h>
 #include <hardware/sensors.h>
+
+/* others */
+#include <dlfcn.h>
 
 #define BIT(data, bit) (data & (1 << bit))
 
@@ -727,10 +732,121 @@ void *controller_uinput_thread(struct controller_uinput_thread_args *args){
 	pthread_exit(0);
 }
 
+struct nested_lightsensor_hal_args{
+	bool enabled;
+	bool initialized;
+	bool initialization_failed;
+	uint32_t delay;
+	sensors_event_t data;
+	pthread_mutex_t args_mutex;
+	sem_t block_sem;
+};
+
+void *nested_lightsensor_hal_thread(struct nested_lightsensor_hal_args *args){
+	void *library_handle = dlopen("/system/vendor/lib64/hw/sensors.iio.so", RTLD_NOW);
+	pthread_mutex_lock(&args->args_mutex);
+	if(!library_handle){
+		library_handle = dlopen("/system/vendor/lib/hw/sensors.iio.so", RTLD_NOW);
+		if(!library_handle){
+			ALOGE("cannot chainload sensors.iio.so");
+			args->initialized = true;
+			args->initialization_failed = true;
+			pthread_mutex_unlock(&args->args_mutex);
+			return 0;
+		}
+	}
+
+	struct sensors_module_t *nested_module = dlsym(library_handle, HAL_MODULE_INFO_SYM_AS_STR);
+	if(!nested_module){
+		ALOGE("cannot fetch module struct from sensors.iio.so");
+		args->initialized = true;
+		args->initialization_failed = true;
+		pthread_mutex_unlock(&args->args_mutex);
+		return 0;
+	}
+
+	struct hw_module_t hw_module;
+	struct hw_device_t *device;
+	if(nested_module->common.methods->open(&hw_module, SENSORS_HARDWARE_POLL, &device)){
+		ALOGE("cannot open hal device from sensors.iio.so");
+		args->initialized = true;
+		args->initialization_failed = true;
+		pthread_mutex_unlock(&args->args_mutex);
+		return 0;
+	}
+
+	struct sensors_poll_device_1 *poll_device = (struct sensors_poll_device_1 *)device;
+
+	const struct sensor_t *sensor_list;
+	int sensor_cnt = nested_module->get_sensors_list(nested_module, &sensor_list);
+	bool light_sensor_found = false;
+	int light_sensor_handle;
+	for(int i = 0; i < sensor_cnt; i++){
+		if(sensor_list[i].type == SENSOR_TYPE_LIGHT){
+			light_sensor_found = true;
+			light_sensor_handle = sensor_list[i].handle - SENSORS_HANDLE_BASE;
+			break;
+		}
+	}
+
+	if(!light_sensor_found){
+		ALOGE("cannot find light sensor from sensors.iio.so");
+		args->initialized = true;
+		args->initialization_failed = true;
+		pthread_mutex_unlock(&args->args_mutex);
+		return 0;
+	}
+
+	// 25 Hz
+	poll_device->batch(poll_device, light_sensor_handle, 0, args->delay * 1000000, 0);
+
+	args->initialized = true;
+	pthread_mutex_unlock(&args->args_mutex);
+
+	ALOGI("sensor.iio.so initialized");
+
+	while(true){
+		pthread_mutex_lock(&args->args_mutex);
+		bool enabled = args->enabled;
+		int32_t delay = args->delay;
+		pthread_mutex_unlock(&args->args_mutex);
+
+		static bool was_enabled = false;
+		if(was_enabled != enabled){
+			poll_device->activate((struct sensors_poll_device_t *)poll_device, light_sensor_handle, enabled);
+			was_enabled = enabled;
+			continue;
+		}
+
+		if(!enabled){
+			sem_wait(&args->block_sem);
+			continue;
+		}
+
+		static int32_t last_delay = 40;
+		if(last_delay != delay){
+			poll_device->batch(poll_device, light_sensor_handle, 0, delay * 1000000, 0);
+			last_delay = delay;
+			continue;
+		}
+
+		sensors_event_t data;
+		poll_device->poll((struct sensors_poll_device_t *)poll_device, &data, 1);
+
+		pthread_mutex_lock(&args->args_mutex);
+		memcpy(&args->data, &data, sizeof(sensors_event_t));
+		pthread_mutex_unlock(&args->args_mutex);
+	}
+
+	return 0;
+}
+
 #define SENS_ROTATE			0
 #define SENS_ACCEL			1
+#define SENS_LIGHT			2
 #define ID_ROTATION_VECTOR		(SENSORS_HANDLE_BASE + SENS_ROTATE)
 #define ID_ACCELEROMETER		(SENSORS_HANDLE_BASE + SENS_ACCEL)
+#define ID_LIGHT		(SENSORS_HANDLE_BASE + SENS_LIGHT)
 
 static const struct sensor_t sensor_list[] = {
 	{
@@ -755,6 +871,17 @@ static const struct sensor_t sensor_list[] = {
 		.power		= 1.0f,
 		.minDelay	= 8 * 1000,
 	},
+	{
+		.name		= "Steam Deck LTRF216A light sensor",
+		.vendor		= "Lite-On",
+		.version	= 1,
+		.handle		= ID_LIGHT,
+		.type		= SENSOR_TYPE_LIGHT,
+		.maxRange	= 50000.0f,
+		.resolution	= 0.01f,
+		.power		= 1.0f,
+		.minDelay	= 40 * 1000,
+	},
 };
 
 static int sensors__get_sensors_list(struct sensors_module_t *module, const struct sensor_t **list){
@@ -770,10 +897,12 @@ struct sensor_context{
 	struct deck_input_state_poller_thread_args poller_args;
 	struct controller_uinput_thread_args controller_args;
 	struct lizard_mode_thread_args lizard_args;
+	struct nested_lightsensor_hal_args lightsensor_hal_args;
 
 	pthread_t poller_tid;
 	pthread_t controller_tid;
 	pthread_t lizard_tid;
+	pthread_t lightsensor_hal_tid;
 
 	uint8_t gyro_on;
 	uint8_t accelerometer_on;
@@ -782,6 +911,7 @@ struct sensor_context{
 	uint64_t gyro_flush;
 	uint64_t accelerometer_flush;
 
+	uint64_t light_flush;
 
 	uint64_t last_seq;
 	uint8_t same_seq_cnt;
@@ -801,6 +931,9 @@ static int context__flush(struct sensors_poll_device_1* dev, int handle)
 			break;
 		case SENS_ACCEL:
 			ctx->accelerometer_flush++;
+			break;
+		case SENS_LIGHT:
+			ctx->light_flush++;
 			break;
 		default:
 			ret = -EINVAL;
@@ -823,15 +956,26 @@ static int context__poll(struct sensors_poll_device_t *dev, sensors_event_t *dat
 		uint8_t accelerometer_on = ctx->accelerometer_on;
 		uint64_t gyro_flush = ctx->gyro_flush;
 		uint64_t accelerometer_flush = ctx->accelerometer_flush;
+		uint64_t light_flush = ctx->light_flush;
 		if(ctx->gyro_flush){
 			ctx->gyro_flush--;
 		}
 		if(ctx->accelerometer_flush){
 			ctx->accelerometer_flush--;
 		}
+		if(ctx->light_flush){
+			ctx->light_flush--;
+		}
 		int32_t gyro_delay = ctx->gyro_delay;
 		int32_t accelerometer_delay = ctx->accelerometer_delay;
 		pthread_mutex_unlock(&(ctx->lock));
+
+		pthread_mutex_lock(&ctx->lightsensor_hal_args.args_mutex);
+		sensors_event_t lightsensor_data;
+		memcpy(&lightsensor_data, &ctx->lightsensor_hal_args.data, sizeof(sensors_event_t));
+		bool light_on = ctx->lightsensor_hal_args.enabled && !ctx->lightsensor_hal_args.initialization_failed && ctx->lightsensor_hal_args.data.type == SENSOR_TYPE_LIGHT;
+		int32_t light_delay = ctx->lightsensor_hal_args.delay;
+		pthread_mutex_unlock(&ctx->lightsensor_hal_args.args_mutex);
 
 		int event_count = 0;
 		if(gyro_flush){
@@ -840,10 +984,16 @@ static int context__poll(struct sensors_poll_device_t *dev, sensors_event_t *dat
 		if(accelerometer_flush){
 			event_count++;
 		}
+		if(light_flush){
+			event_count++;
+		}
 		if(gyro_on){
 			event_count++;
 		}
 		if(accelerometer_on){
+			event_count++;
+		}
+		if(light_on){
 			event_count++;
 		}
 
@@ -865,6 +1015,9 @@ static int context__poll(struct sensors_poll_device_t *dev, sensors_event_t *dat
 		}
 		if(accelerometer_on && accelerometer_delay < delay){
 			delay = accelerometer_delay;
+		}
+		if(light_on && light_delay < delay){
+			delay = light_delay;
 		}
 		usleep(delay * 1000);
 
@@ -916,6 +1069,16 @@ static int context__poll(struct sensors_poll_device_t *dev, sensors_event_t *dat
 			offset++;
 		}
 
+		if(light_flush){
+			data[offset].version = META_DATA_VERSION;
+			data[offset].type = SENSOR_TYPE_META_DATA;
+			data[offset].sensor = 0;
+			data[offset].timestamp = 0;
+			data[offset].meta_data.what = META_DATA_FLUSH_COMPLETE;
+			data[offset].meta_data.sensor = ID_ACCELEROMETER;
+			offset++;
+		}
+
 		if(gyro_on){
 			data[offset].timestamp = ((int64_t)(t.tv_sec) * 1000000000LL) + t.tv_nsec;
 			data[offset].version = sizeof(*data);
@@ -941,6 +1104,14 @@ static int context__poll(struct sensors_poll_device_t *dev, sensors_event_t *dat
 			offset++;
 		}
 
+		if(light_on){
+			memcpy(&data[offset], &lightsensor_data, sizeof(sensors_event_t));
+			data[offset].sensor = ID_LIGHT;
+			// scale to match one size match all config_autoBrightnessLevels
+			data[offset].light = data[offset].light * 15.0;
+			offset++;
+		}
+
 		return offset;
 	}
 }
@@ -960,6 +1131,11 @@ static int context__setDelay(struct sensors_poll_device_t *dev, int handle, int6
 			break;
 		case SENS_ACCEL:
 			ctx->accelerometer_delay = delay;
+			break;
+		case SENS_LIGHT:
+			pthread_mutex_lock(&ctx->lightsensor_hal_args.args_mutex);
+			ctx->lightsensor_hal_args.delay = delay;
+			pthread_mutex_unlock(&ctx->lightsensor_hal_args.args_mutex);
 			break;
 		default:
 			ret = -EINVAL;
@@ -986,6 +1162,18 @@ static int context__activate(struct sensors_poll_device_t *dev, int handle, int 
 			break;
 		case SENS_ACCEL:
 			ctx->accelerometer_on = enabled ? 1 : 0;
+			break;
+		case SENS_LIGHT:
+			pthread_mutex_lock(&ctx->lightsensor_hal_args.args_mutex);
+			ctx->lightsensor_hal_args.enabled = enabled;
+			bool initialization_failed = ctx->lightsensor_hal_args.initialization_failed;
+			pthread_mutex_unlock(&ctx->lightsensor_hal_args.args_mutex);
+			if(enabled){
+				sem_post(&ctx->lightsensor_hal_args.block_sem);
+			}
+			if(initialization_failed){
+				ret = -ENOENT;
+			}
 			break;
 		default:
 			ret = -EINVAL;
@@ -1104,6 +1292,48 @@ static int open_sensors(const struct hw_module_t *module, const char* id,
 			free(ctx);
 			return -ENOMEM;
 		}
+	}
+
+	// start nested lightsensor hal
+	ctx->lightsensor_hal_args.enabled = false;
+	ctx->lightsensor_hal_args.initialized = false;
+	ctx->lightsensor_hal_args.initialization_failed = false;
+	ctx->lightsensor_hal_args.delay = 40;
+	memset(&ctx->lightsensor_hal_args.data, 0, sizeof(sensors_event_t));
+	res = pthread_mutex_init(&ctx->lightsensor_hal_args.args_mutex, 0);
+	if(res != 0){
+		ALOGE("cannot create nested hal args mutex");
+		pthread_mutex_destroy(&(ctx->lock));
+		pthread_mutex_destroy(&(ctx->poller_args.lock));
+		free(ctx);
+		return -ENOMEM;
+	}
+	res = sem_init(&ctx->lightsensor_hal_args.block_sem, 0, 0);
+	if(res != 0){
+		ALOGE("cannot create poll blocking semaphore");
+		pthread_mutex_destroy(&(ctx->lock));
+		pthread_mutex_destroy(&(ctx->poller_args.lock));
+		pthread_mutex_destroy(&ctx->lightsensor_hal_args.args_mutex);
+		return -ENOMEM;
+	}
+	res = pthread_create(&ctx->lightsensor_hal_tid, 0, (void *(*)(void *))nested_lightsensor_hal_thread, &ctx->lightsensor_hal_args);
+	if(res != 0){
+		ALOGE("cannot start nested hal");
+		pthread_mutex_destroy(&(ctx->lock));
+		pthread_mutex_destroy(&(ctx->poller_args.lock));
+		pthread_mutex_destroy(&ctx->lightsensor_hal_args.args_mutex);
+		sem_destroy(&ctx->lightsensor_hal_args.block_sem);
+		free(ctx);
+		return -ENOMEM;
+	}
+	while(true){
+		pthread_mutex_lock(&ctx->lightsensor_hal_args.args_mutex);
+		bool initialized = ctx->lightsensor_hal_args.initialized;
+		pthread_mutex_unlock(&ctx->lightsensor_hal_args.args_mutex);
+		if(initialized){
+			break;
+		}
+		sleep(0);
 	}
 
 	// common setup
