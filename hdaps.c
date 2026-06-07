@@ -112,7 +112,7 @@ static int device__poll(struct sensors_poll_device_t *device,
 		return 0;
 
 	// dynamic axis tuning, expect "1,-1,-1" format
-	if (property_get("hal.sensors.axis.revert", prop, 0)) {
+	if (property_get("vendor.hal.sensors.axis.revert", prop, 0)) {
 		sscanf(prop, "%d,%d,%d", &x, &y, &z);
 		ALOGD("axis signs set to %d %d %d", x, y, z);
 	} else {
@@ -126,7 +126,7 @@ static int device__poll(struct sensors_poll_device_t *device,
 		signs.conv[ABS_X], signs.conv[ABS_Y] ,signs.conv[ABS_Z]);
 
 	// dynamic axis swap, expect "0,1,2" format
-	if (property_get("hal.sensors.axis.order", prop, 0)) {
+	if (property_get("vendor.hal.sensors.axis.order", prop, 0)) {
 		sscanf(prop, "%d,%d,%d", &x, &y, &z);
 		ALOGD("axis order set to %c %c %c", 'x'+x, 'x'+y, 'x'+z);
 	} else {

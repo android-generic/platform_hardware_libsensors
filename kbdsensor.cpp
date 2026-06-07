@@ -107,9 +107,9 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 	fd = -1;
 	const char *dirname = "/dev/input";
 	char prop[PROPERTY_VALUE_MAX];
-	if (property_get("hal.sensors.kbd.keys", prop, 0))
+	if (property_get("vendor.hal.sensors.kbd.keys", prop, 0))
 		parse_kbd_keys_from_prop(prop, ktype);
-	else if (property_get("hal.sensors.kbd.type", prop, 0))
+	else if (property_get("vendor.hal.sensors.kbd.type", prop, 0))
 		ktype = &KeysType[atoi(prop)];
 	else
 		ktype = 0;
