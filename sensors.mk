@@ -3,4 +3,5 @@
 PRODUCT_PACKAGES := \
     sensors.iio \
     sensors.kbd \
+    sensors.hdaps \
     sensors.jupiter
