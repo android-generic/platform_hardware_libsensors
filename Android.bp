@@ -1,0 +1,37 @@
+// Copyright (C) 2011-2014 The Android-x86 Open Source Project
+
+cc_library_shared {
+    name: "sensors.hdaps",
+    vendor: true,
+    relative_install_path: "hw",
+    srcs: ["hdaps.c"],
+    cflags: ["-Wno-unused-parameter"],
+    shared_libs: [
+        "liblog",
+        "libcutils",
+    ],
+}
+
+cc_library_shared {
+    name: "sensors.kbd",
+    vendor: true,
+    relative_install_path: "hw",
+    srcs: ["kbdsensor.cpp"],
+    shared_libs: [
+        "liblog",
+        "libcutils",
+    ],
+}
+
+cc_library_shared {
+    name: "sensors.jupiter",
+    vendor: true,
+    relative_install_path: "hw",
+    srcs: ["jupiter.c"],
+    cflags: ["-Wno-unused-parameter"],
+    shared_libs: [
+        "liblog",
+        "libcutils",
+    ],
+    required: ["sensors.iio"],
+}
