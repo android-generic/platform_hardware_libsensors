@@ -44,6 +44,12 @@
 /* others */
 #include <dlfcn.h>
 
+#ifdef __LP64__
+#define IIO_HAL_PATH "/vendor/lib64/hw/sensors.iio.so"
+#else
+#define IIO_HAL_PATH "/vendor/lib/hw/sensors.iio.so"
+#endif
+
 #define BIT(data, bit) (data & (1 << bit))
 
 #define DEFAULT_DEADZONE 4096
@@ -743,17 +749,15 @@ struct nested_lightsensor_hal_args{
 };
 
 void *nested_lightsensor_hal_thread(struct nested_lightsensor_hal_args *args){
-	void *library_handle = dlopen("/system/vendor/lib64/hw/sensors.iio.so", RTLD_NOW);
+	void *library_handle = dlopen(IIO_HAL_PATH, RTLD_NOW);
 	pthread_mutex_lock(&args->args_mutex);
-	if(!library_handle){
-		library_handle = dlopen("/system/vendor/lib/hw/sensors.iio.so", RTLD_NOW);
-		if(!library_handle){
-			ALOGE("cannot chainload sensors.iio.so");
-			args->initialized = true;
-			args->initialization_failed = true;
-			pthread_mutex_unlock(&args->args_mutex);
-			return 0;
-		}
+
+	if(!library_handle) {
+		ALOGE("cannot chainload sensors.iio.so");
+		args->initialized = true;
+		args->initialization_failed = true;
+		pthread_mutex_unlock(&args->args_mutex);
+		return 0;
 	}
 
 	struct sensors_module_t *nested_module = dlsym(library_handle, HAL_MODULE_INFO_SYM_AS_STR);
