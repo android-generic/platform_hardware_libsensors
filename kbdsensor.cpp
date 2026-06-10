@@ -3,8 +3,10 @@
  * Atkbd style sensor
  *
  * Copyright (C) 2011-2013 The Android-x86 Open Source Project
+ * Copyright (C) 2026 BlissLabs
  *
  * by Chih-Wei Huang <cwhuang@linux.org.tw>
+ * modified by HMTheBoy154 <hmtheboy154@blisslabs.org>
  *
  * Licensed under GPLv2 or later
  *
@@ -18,6 +20,7 @@
 #include <cstring>
 #include <cinttypes>
 #include <sys/stat.h>
+#include <sys/inotify.h>
 #include <poll.h>
 #include <fcntl.h>
 #include <dirent.h>
@@ -26,6 +29,32 @@
 #include <linux/uinput.h>
 #include <hardware/sensors.h>
 #include <cutils/properties.h>
+#include <tinyxml2.h>
+#include <vector>
+#include <bitset>
+#include <string>
+
+using namespace tinyxml2;
+
+struct KbdActionConfig {
+    int key = -1;
+    int mod1 = -1;
+    int mod2 = -1;
+    bool isMatch(const std::bitset<KEY_MAX>& state, int code) const {
+        if (key != code) return false;
+        if (mod1 != -1 && !state.test(mod1)) return false;
+        if (mod2 != -1 && !state.test(mod2)) return false;
+        return true;
+    }
+};
+
+struct KbdInputConfig {
+    std::string name;
+    KbdActionConfig rot0;
+    KbdActionConfig rot90;
+    KbdActionConfig rot180;
+    KbdActionConfig rot270;
+};
 
 struct KbdSensorKeys {
 	char name[64];
@@ -58,7 +87,7 @@ struct SensorPollContext : SensorFd<sensors_poll_device_1> {
   public:
 	SensorPollContext(const struct hw_module_t *module, struct hw_device_t **device);
 	~SensorPollContext();
-	bool isValid() const { return (pfd.fd >= 0); }
+	bool isValid() const { return inotify_fd >= 0; }
 
   private:
 	static int poll_close(struct hw_device_t *dev);
@@ -69,6 +98,11 @@ struct SensorPollContext : SensorFd<sensors_poll_device_1> {
 	static int poll_flush(struct sensors_poll_device_1* dev, int sensor_handle);
 
 	int doPoll(sensors_event_t *data, int count);
+	std::vector<KbdInputConfig> parseXmlConfig();
+
+	void openDevice(const char* path);
+	void removeDevice(size_t index);
+	void scanDevices();
 
 	enum {
 		ROT_0,
@@ -77,12 +111,26 @@ struct SensorPollContext : SensorFd<sensors_poll_device_1> {
 		ROT_270
 	};
 
+	struct TrackedDevice {
+		int fd;
+		std::string path;
+		bool is_xml;
+		KbdInputConfig xml_config;
+		KbdSensorKeys* fallback_config;
+		std::bitset<KEY_MAX> key_state;
+	};
+
 	bool enabled;
 	int rotation;
 	int64_t sampling_period_ns;
-	struct pollfd pfd;
+	int inotify_fd;
+	int watch_input;
+	int watch_config;
+	std::vector<struct pollfd> pfds;
+	std::vector<TrackedDevice> devices;
+	std::vector<KbdInputConfig> parsed_configs;
+	KbdSensorKeys* fallback_ktype;
 	sensors_event_t orients[4];
-	KbdSensorKeys *ktype;
 };
 
 void parse_kbd_keys_from_prop(char *prop, KbdSensorKeys *ktype)
@@ -94,7 +142,7 @@ void parse_kbd_keys_from_prop(char *prop, KbdSensorKeys *ktype)
 }
 
 SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw_device_t **device)
-      : SensorFd<sensors_poll_device_1>(module), enabled(false), rotation(ROT_0), ktype(KeysType)
+      : SensorFd<sensors_poll_device_1>(module), enabled(false), rotation(ROT_0), inotify_fd(-1), watch_input(-1), watch_config(-1)
 {
 	common.close = poll_close;
 	activate     = poll_activate;
@@ -103,59 +151,36 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 	batch        = poll_batch;
 	flush        = poll_flush;
 
-	int &fd = pfd.fd;
-	fd = -1;
-	const char *dirname = "/dev/input";
-	char prop[PROPERTY_VALUE_MAX];
-	if (property_get("vendor.hal.sensors.kbd.keys", prop, 0))
-		parse_kbd_keys_from_prop(prop, ktype);
-	else if (property_get("vendor.hal.sensors.kbd.type", prop, 0))
-		ktype = &KeysType[atoi(prop)];
-	else
-		ktype = 0;
-	if (DIR *dir = opendir(dirname)) {
-		char name[PATH_MAX];
-		while (struct dirent *de = readdir(dir)) {
-			if (de->d_name[0] != 'e') // not eventX
-				continue;
-			snprintf(name, PATH_MAX, "%s/%s", dirname, de->d_name);
-			fd = open(name, O_RDWR);
-			if (fd < 0) {
-				ALOGE("could not open %s, %s", name, strerror(errno));
-				continue;
-			}
-			name[sizeof(name) - 1] = '\0';
-			if (ioctl(fd, EVIOCGNAME(sizeof(name) - 1), &name) < 1) {
-				ALOGE("could not get device name for %s, %s\n", name, strerror(errno));
-				name[0] = '\0';
-			}
-
-			if (ktype) {
-				if (!strcmp(name, ktype->name))
-					break;
-			} else {
-				ktype = KeysType + (sizeof(KeysType) / sizeof(KeysType[0]));
-				while (--ktype != KeysType)
-					if (!strcmp(name, ktype->name))
-						break;
-				if (ktype != KeysType)
-					break;
-				else
-					ktype = 0;
-			}
-			close(fd);
-			fd = -1;
-		}
-		closedir(dir);
-		if (fd < 0) {
-			ALOGW("could not find any kbdsensor device");
-			return;
-		}
-		*device = &common;
-		ALOGI("Open %s ok, fd=%d", name, fd);
+	inotify_fd = inotify_init1(IN_NONBLOCK);
+	if (inotify_fd >= 0) {
+		watch_input = inotify_add_watch(inotify_fd, "/dev/input", IN_CREATE | IN_DELETE);
+		watch_config = inotify_add_watch(inotify_fd, "/data/system", IN_CLOSE_WRITE | IN_MOVED_TO | IN_DELETE | IN_CREATE);
+		struct pollfd p;
+		p.fd = inotify_fd;
+		p.events = POLLIN;
+		p.revents = 0;
+		pfds.push_back(p);
 	}
 
-	pfd.events = POLLIN;
+	char prop[PROPERTY_VALUE_MAX];
+	fallback_ktype = KeysType;
+	if (property_get("vendor.hal.sensors.kbd.keys", prop, 0))
+		parse_kbd_keys_from_prop(prop, fallback_ktype);
+	else if (property_get("vendor.hal.sensors.kbd.type", prop, 0))
+		fallback_ktype = &KeysType[atoi(prop)];
+	else
+		fallback_ktype = 0;
+
+	parsed_configs = parseXmlConfig();
+
+	scanDevices();
+
+	if (devices.empty() && inotify_fd < 0) {
+		ALOGW("could not find any kbdsensor device and inotify failed");
+		return;
+	}
+	*device = &common;
+
 	orients[ROT_0].version = sizeof(sensors_event_t);
 	orients[ROT_0].sensor = ID_ACCELERATION;
 	orients[ROT_0].type = SENSOR_TYPE_ACCELEROMETER;
@@ -177,12 +202,140 @@ SensorPollContext::SensorPollContext(const struct hw_module_t *module, struct hw
 	orients[ROT_270].acceleration.y = 0.0;
 	orients[ROT_270].acceleration.z = -sin_angle;
 
-	ALOGD("%s: module=%p dev=%p fd=%d", __FUNCTION__, module, this, fd);
+	ALOGD("%s: module=%p dev=%p pfds_count=%zu", __FUNCTION__, module, this, pfds.size());
+}
+
+void SensorPollContext::openDevice(const char* path) {
+	for (const auto& dev : devices) {
+		if (dev.path == path) return;
+	}
+	int fd = open(path, O_RDWR);
+	if (fd < 0) return;
+
+	char name[PATH_MAX];
+	name[0] = '\0';
+	if (ioctl(fd, EVIOCGNAME(sizeof(name) - 1), &name) < 1) {
+		close(fd);
+		return;
+	}
+
+	bool is_xml = false;
+	KbdInputConfig xml_cfg;
+	KbdSensorKeys* fb_cfg = nullptr;
+
+	if (!parsed_configs.empty()) {
+		for (const auto& config : parsed_configs) {
+			if (config.name == name) {
+				is_xml = true;
+				xml_cfg = config;
+				break;
+			}
+		}
+	}
+
+	if (!is_xml) {
+		if (fallback_ktype) {
+			if (!strcmp(name, fallback_ktype->name)) {
+				fb_cfg = fallback_ktype;
+			}
+		}
+		if (!fb_cfg) {
+			KbdSensorKeys* temp_ktype = KeysType + (sizeof(KeysType) / sizeof(KeysType[0]));
+			while (--temp_ktype != KeysType) {
+				if (!strcmp(name, temp_ktype->name)) {
+					fb_cfg = temp_ktype;
+					break;
+				}
+			}
+		}
+	}
+
+	if (is_xml || fb_cfg) {
+		TrackedDevice dev;
+		dev.fd = fd;
+		dev.path = path;
+		dev.is_xml = is_xml;
+		dev.xml_config = xml_cfg;
+		dev.fallback_config = fb_cfg;
+		devices.push_back(dev);
+
+		struct pollfd p;
+		p.fd = fd;
+		p.events = POLLIN;
+		p.revents = 0;
+		pfds.push_back(p);
+		ALOGI("Hotplug matched and opened %s, fd=%d", name, fd);
+	} else {
+		close(fd);
+	}
+}
+
+void SensorPollContext::removeDevice(size_t index) {
+	if (index < devices.size()) {
+		close(devices[index].fd);
+		devices.erase(devices.begin() + index);
+		pfds.erase(pfds.begin() + index + 1); // +1 because pfds[0] is inotify_fd
+	}
+}
+
+void SensorPollContext::scanDevices() {
+	const char *dirname = "/dev/input";
+	if (DIR *dir = opendir(dirname)) {
+		while (struct dirent *de = readdir(dir)) {
+			if (de->d_name[0] != 'e') continue; // eventX
+			char path[PATH_MAX];
+			snprintf(path, PATH_MAX, "%s/%s", dirname, de->d_name);
+			openDevice(path);
+		}
+		closedir(dir);
+	}
+}
+
+std::vector<KbdInputConfig> SensorPollContext::parseXmlConfig() {
+	std::vector<KbdInputConfig> configs;
+	XMLDocument doc;
+	if (doc.LoadFile("/data/system/kbd_config.xml") != XML_SUCCESS) {
+		return configs;
+	}
+
+	XMLElement* root = doc.RootElement();
+	if (!root || strcmp(root->Name(), "kbd_config") != 0) {
+		ALOGE("Invalid root element in kbd_config.xml");
+		return configs;
+	}
+
+	for (XMLElement* device = root->FirstChildElement("device"); device != nullptr; device = device->NextSiblingElement("device")) {
+		const char* name = device->Attribute("name");
+		if (!name) continue;
+
+		KbdInputConfig config;
+		config.name = name;
+
+		auto parseRot = [](XMLElement* rotElem, KbdActionConfig& action) {
+			if (!rotElem) return;
+			action.key = rotElem->IntAttribute("key", -1);
+			action.mod1 = rotElem->IntAttribute("mod1", -1);
+			action.mod2 = rotElem->IntAttribute("mod2", -1);
+		};
+
+		parseRot(device->FirstChildElement("rot0"), config.rot0);
+		parseRot(device->FirstChildElement("rot90"), config.rot90);
+		parseRot(device->FirstChildElement("rot180"), config.rot180);
+		parseRot(device->FirstChildElement("rot270"), config.rot270);
+
+		configs.push_back(config);
+	}
+	return configs;
 }
 
 SensorPollContext::~SensorPollContext()
 {
-	close(pfd.fd);
+	for (auto& dev : devices) {
+		close(dev.fd);
+	}
+	if (inotify_fd >= 0) {
+		close(inotify_fd);
+	}
 }
 
 int SensorPollContext::poll_close(struct hw_device_t *dev)
@@ -233,69 +386,160 @@ int SensorPollContext::doPoll(sensors_event_t *data, int count)
 	if (!isValid())
 		return 0;
 
-	int *keys = ktype->keys;
-	while (int pollres = ::poll(&pfd, 1, -1)) {
+	while (int pollres = ::poll(pfds.data(), pfds.size(), -1)) {
 		if (pollres < 0) {
-			ALOGE("%s: poll %d error: %s", __FUNCTION__, pfd.fd, strerror(errno));
+			if (errno == EINTR) continue;
+			ALOGE("%s: poll error: %s", __FUNCTION__, strerror(errno));
 			break;
 		}
-		if (!(pfd.revents & POLLIN)) {
-			ALOGW("%s: ignore revents %d", __FUNCTION__, pfd.revents);
-			continue;
-		}
 
-		struct input_event iev;
-		size_t res = ::read(pfd.fd, &iev, sizeof(iev));
-		if (res < sizeof(iev)) {
-			ALOGW("insufficient input data(%zu)? fd=%d", res, pfd.fd);
-			continue;
-		}
-		ALOGV("type=%d scancode=%d value=%d from fd=%d", iev.type, iev.code, iev.value, pfd.fd);
-		if (iev.type == keys[0]) {
-			int rot;
-			int input = (keys[0] == EV_MSC) ? iev.value : iev.code;
-			if (input == keys[1])
-				rot = ROT_0;
-			else if (input == keys[2])
-				rot = ROT_90;
-			else if (input == keys[3])
-				rot = ROT_180;
-			else if (input == keys[4])
-				rot = ROT_270;
-			else if (input == keys[5] || input == keys[6])
-				rot = rotation;
-			else
-				rot = -1;
+		bool event_processed = false;
 
-			if (rot >= 0) {
-				if (rot != rotation) {
-					ALOGI("orientation changed from %d to %d", rotation * 90, rot * 90);
-					rotation = rot;
+		if (inotify_fd >= 0 && (pfds[0].revents & POLLIN)) {
+			char buffer[4096];
+			int length = ::read(inotify_fd, buffer, sizeof(buffer));
+			if (length > 0) {
+				int i = 0;
+				bool xml_changed = false;
+				while (i < length) {
+					struct inotify_event *event = (struct inotify_event *) &buffer[i];
+					if (event->len) {
+						if (event->wd == watch_input) {
+							if (event->mask & IN_CREATE) {
+								if (strncmp(event->name, "event", 5) == 0) {
+									char path[PATH_MAX];
+									snprintf(path, PATH_MAX, "/dev/input/%s", event->name);
+									openDevice(path);
+								}
+							} else if (event->mask & IN_DELETE) {
+								if (strncmp(event->name, "event", 5) == 0) {
+									char path[PATH_MAX];
+									snprintf(path, PATH_MAX, "/dev/input/%s", event->name);
+									for (size_t d = 0; d < devices.size(); ++d) {
+										if (devices[d].path == path) {
+											removeDevice(d);
+											break;
+										}
+									}
+								}
+							}
+						} else if (event->wd == watch_config) {
+							if (strcmp(event->name, "kbd_config.xml") == 0) {
+								xml_changed = true;
+							}
+						}
+					}
+					i += sizeof(struct inotify_event) + event->len;
 				}
-				if (enabled && count > 0)
-					break;
+
+				if (xml_changed) {
+					ALOGI("kbd_config.xml changed, reloading configurations");
+					parsed_configs = parseXmlConfig();
+
+					for (size_t d = 0; d < devices.size(); ) {
+						char name[PATH_MAX];
+						name[0] = '\0';
+						bool is_xml = false;
+						KbdInputConfig xml_cfg;
+
+						if (ioctl(devices[d].fd, EVIOCGNAME(sizeof(name) - 1), &name) >= 1) {
+							for (const auto& config : parsed_configs) {
+								if (config.name == name) {
+									is_xml = true;
+									xml_cfg = config;
+									break;
+								}
+							}
+						}
+
+						if (is_xml || devices[d].fallback_config) {
+							devices[d].is_xml = is_xml;
+							if (is_xml) devices[d].xml_config = xml_cfg;
+							++d;
+						} else {
+							ALOGI("Device %s no longer matches any config, closing", devices[d].path.c_str());
+							removeDevice(d);
+						}
+					}
+					scanDevices();
+				}
 			}
-		} else if (iev.type == EV_KEY) {
-			if (iev.code == keys[1] && iev.value) {
-				if (rotation == ROT_270)
-					rotation = ROT_0;
-				else
-					rotation++;
-			}
-			if (iev.code == keys[2] && iev.value) {
-				if (rotation == ROT_0)
-					rotation = ROT_270;
-				else
-					rotation--;
-			}
-			break;
-		} else if (iev.type == EV_SW && iev.code == SW_TABLET_MODE) {
-			if (!iev.value)
-				rotation = ROT_0;
-			else if (rotation == ROT_0)
-				rotation = ROT_90;
-			break;
 		}
+
+		for (size_t i = 1; i < pfds.size(); ) {
+			size_t d = i - 1;
+			if (pfds[i].revents & (POLLERR | POLLHUP)) {
+				ALOGW("Device disconnected: %s", devices[d].path.c_str());
+				removeDevice(d);
+				continue;
+			} else if (pfds[i].revents & POLLIN) {
+				struct input_event iev;
+				size_t res = ::read(pfds[i].fd, &iev, sizeof(iev));
+				if (res < sizeof(iev)) {
+					ALOGW("insufficient input data on %s", devices[d].path.c_str());
+					removeDevice(d);
+					continue;
+				}
+				ALOGV("type=%d scancode=%d value=%d from fd=%d", iev.type, iev.code, iev.value, pfds[i].fd);
+
+				int rot = -1;
+				if (devices[d].is_xml) {
+					if (iev.type == EV_KEY && iev.code < KEY_MAX) {
+						devices[d].key_state.set(iev.code, iev.value != 0); // 1 for press, 0 for release, 2 for repeat
+						if (iev.value) { // Trigger on press or repeat
+							if (devices[d].xml_config.rot0.isMatch(devices[d].key_state, iev.code)) rot = ROT_0;
+							else if (devices[d].xml_config.rot90.isMatch(devices[d].key_state, iev.code)) rot = ROT_90;
+							else if (devices[d].xml_config.rot180.isMatch(devices[d].key_state, iev.code)) rot = ROT_180;
+							else if (devices[d].xml_config.rot270.isMatch(devices[d].key_state, iev.code)) rot = ROT_270;
+						}
+					}
+				} else {
+					KbdSensorKeys* ktype = devices[d].fallback_config;
+					int *keys = ktype->keys;
+					if (iev.type == keys[0]) {
+						int input = (keys[0] == EV_MSC) ? iev.value : iev.code;
+						if (input == keys[1])
+							rot = ROT_0;
+						else if (input == keys[2])
+							rot = ROT_90;
+						else if (input == keys[3])
+							rot = ROT_180;
+						else if (input == keys[4])
+							rot = ROT_270;
+						else if (input == keys[5] || input == keys[6])
+							rot = rotation;
+						else
+							rot = -1;
+					} else if (iev.type == EV_KEY) {
+						if (iev.code == keys[1] && iev.value) {
+							if (rotation == ROT_270) rot = ROT_0;
+							else rot = rotation + 1;
+						}
+						if (iev.code == keys[2] && iev.value) {
+							if (rotation == ROT_0) rot = ROT_270;
+							else rot = rotation - 1;
+						}
+					} else if (iev.type == EV_SW && iev.code == SW_TABLET_MODE) {
+						if (!iev.value) rot = ROT_0;
+						else if (rotation == ROT_0) rot = ROT_90;
+					}
+				}
+
+				if (rot >= 0 && rot <= ROT_270) {
+					if (rot != rotation) {
+						ALOGI("orientation changed from %d to %d", rotation * 90, rot * 90);
+						rotation = rot;
+					}
+					if (enabled && count > 0) {
+						event_processed = true;
+					}
+				}
+				++i;
+			} else {
+				++i;
+			}
+		}
+		if (event_processed) break;
 	}
 
 	int cnt;
@@ -304,11 +548,20 @@ int SensorPollContext::doPoll(sensors_event_t *data, int count)
 	clock_gettime(CLOCK_MONOTONIC, &t);
 	data[0].timestamp = int64_t(t.tv_sec) * 1000000000LL + t.tv_nsec;
 	struct timespec delay = { 0, static_cast<long>(sampling_period_ns) };
-	for (cnt = 1; !nanosleep(&delay, 0) && cnt < keys[7] && cnt < count; ++cnt) {
+	
+	int max_cnt = 1;
+	for (const auto& dev : devices) {
+		if (!dev.is_xml && dev.fallback_config) {
+			max_cnt = dev.fallback_config->keys[7];
+			break;
+		}
+	}
+
+	for (cnt = 1; !nanosleep(&delay, 0) && cnt < max_cnt && cnt < count; ++cnt) {
 		data[cnt] = data[cnt - 1];
 		data[cnt].timestamp += sampling_period_ns;
 	}
-	ALOGV("%s: dev=%p fd=%d rotation=%d cnt=%d", __FUNCTION__, this, pfd.fd, rotation * 90, cnt);
+	ALOGV("%s: dev=%p rotation=%d cnt=%d", __FUNCTION__, this, rotation * 90, cnt);
 	return cnt;
 }
 

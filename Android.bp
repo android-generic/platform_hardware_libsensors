@@ -23,6 +23,7 @@ cc_library_shared {
     shared_libs: [
         "liblog",
         "libcutils",
+        "libtinyxml2",
     ],
     header_libs: [
         "libhardware_headers",
